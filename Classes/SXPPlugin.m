@@ -70,11 +70,11 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 	if( (self = [super init]) ) {
 		// init menu
 		NSMenu *m = [[NSMenu alloc] initWithTitle:@"XPath"];
-		NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:@"XPath for node" action:@selector(onMenu:) keyEquivalent:@""];
+		NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:@"Show XPath for Selected Node" action:@selector(onMenu:) keyEquivalent:@""];
 		[mi setTarget:self];
 		[m addItem:mi];
 		[mi release];
-		mi = [[NSMenuItem alloc] initWithTitle:@"Show browser" action:@selector(onMenuBrowser:) keyEquivalent:@""];
+		mi = [[NSMenuItem alloc] initWithTitle:@"Show Browser" action:@selector(onMenuBrowser:) keyEquivalent:@""];
 		[mi setTarget:self];
 		[m addItem:mi];
 		[mi release];
@@ -116,11 +116,35 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 	[_nodes release];
 	_nodes = nil;
 	if(![[o class] isEqual:[WebUndefined class]]) {
+		int rt = [o resultType];
 		NSMutableArray *nodes = [NSMutableArray array];
-		id n = [o iterateNext];
-		while(n) {
-			[nodes addObject:[self dictForNode:n]];
-			n = [o iterateNext];
+		id n;
+		switch(rt) {
+			case 1:
+				[nodes addObject:[NSDictionary dictionaryWithObjectsAndKeys:
+								  @"NUMBER", @"name",
+								  [NSNumber numberWithFloat:[o numberValue]], @"content",
+								  nil]];
+				break;
+			case 2:
+				[nodes addObject:[NSDictionary dictionaryWithObjectsAndKeys:
+								  @"STRING", @"name",
+								  [o stringValue], @"content",
+								  nil]];
+				break;
+			case 3:
+				[nodes addObject:[NSDictionary dictionaryWithObjectsAndKeys:
+								  @"BOOLEAN", @"name",
+								  [NSNumber numberWithBool:[o booleanValue]], @"content",
+								  nil]];
+				break;
+			default:
+				n = [o iterateNext];
+				while(n) {
+					[nodes addObject:[self dictForNode:n]];
+					n = [o iterateNext];
+				}
+				break;
 		}
 		_nodes = [nodes retain];
 	};
