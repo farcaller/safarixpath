@@ -29,6 +29,8 @@
 	IBOutlet NSWindow *window;
 	IBOutlet NSTextField *xpathField;
 	IBOutlet NSOutlineView *outlineView;
+	IBOutlet NSTextField *aboutField;
+	IBOutlet NSMatrix *modeMatrix;
 	
 	NSMenuItem *_myMenuItem;
 	NSDictionary *_ctx;
@@ -38,10 +40,6 @@
 @property (readonly) NSMenuItem *myMenuItem;
 
 + (SXPPlugin *)sharedInstance;
-- (void)swizzle;
-
-- (NSString *)xpathForNode:(id)node;
-- (NSDictionary *)dictForNode:(DOMNode *)node;
 
 - (void)onMenu:(id)sender;
 - (void)onMenuBrowser:(id)sender;

@@ -27,6 +27,7 @@
 #import <WebKit/WebKit.h>
 #import <WebKit/WebScriptObject.h>
 
+#pragma mark ** C API **
 static SXPPlugin *Plugin = nil;
 
 BOOL DTRenameSelector(Class _class, SEL _oldSelector, SEL _newSelector)
@@ -52,6 +53,24 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 	return itms2;
 }
 
+#pragma mark -
+#pragma mark ** Private Methods **
+@interface SXPPlugin (SXPPluginPrivate)
+
+- (void)swizzle;
+
+- (NSString *)xpathForNode:(id)node;
+- (NSDictionary *)dictForNode:(DOMNode *)node;
+- (NSDictionary *)dictForNSXMLNode:(NSXMLNode *)node;
+
+- (NSArray *)nodesFromDOMForXPath:(NSString *)xpath;
+- (NSArray *)nodesFromDocForXPath:(NSString *)xpath;
+
+@end
+
+
+#pragma mark -
+#pragma mark ** Main Class **
 @implementation SXPPlugin
 
 @synthesize ctx = _ctx, myMenuItem = _myMenuItem;
@@ -86,6 +105,9 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 		
 		// init ui
 		[NSBundle loadNibNamed:@"XPathBrowser" owner:self];
+		[aboutField setStringValue:[NSString
+									stringWithFormat:[aboutField stringValue],
+									[[[NSBundle bundleForClass:[self class]] infoDictionary] objectForKey:@"CFBundleVersion"]]];
 	}
 	return self;
 }
@@ -107,35 +129,50 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 
 - (void)onEvaluate:(id)sender
 {
-	NSString *xp = [xpathField stringValue];
-	WebFrame *frame = [_ctx objectForKey:@"WebElementFrame"];
-	WebView *view = [frame webView];
-	NSString *js = [NSString stringWithFormat:@"document.evaluate(\"%@\", document, null, XPathResult.ANY_TYPE,null)", xp];
+	NSString *xpath = [xpathField stringValue];
 	
-	id o = [[view windowScriptObject] evaluateWebScript:js];
 	[_nodes release];
 	_nodes = nil;
+	
+	if([modeMatrix selectedColumn] == 0)
+		_nodes = [[self nodesFromDOMForXPath:xpath] retain];
+	else
+		_nodes = [[self nodesFromDocForXPath:xpath] retain];
+	
+	[outlineView reloadData];
+}
+
+#pragma mark
+#pragma mark XPath evaluators
+- (NSArray *)nodesFromDOMForXPath:(NSString *)xpath
+{
+	WebFrame *frame = [_ctx objectForKey:@"WebElementFrame"];
+	WebView *view = [frame webView];
+	NSString *js = [NSString stringWithFormat:@"document.evaluate(\"%@\", document, null, XPathResult.ANY_TYPE,null)", xpath];
+	NSMutableArray *nodes = nil;
+	
+	id o = [[view windowScriptObject] evaluateWebScript:js];
 	if(![[o class] isEqual:[WebUndefined class]]) {
 		int rt = [o resultType];
-		NSMutableArray *nodes = [NSMutableArray array];
+		nodes = [NSMutableArray array];
 		id n;
 		switch(rt) {
 			case 1:
 				[nodes addObject:[NSDictionary dictionaryWithObjectsAndKeys:
 								  @"NUMBER", @"name",
-								  [NSNumber numberWithFloat:[o numberValue]], @"content",
+								  [NSNumber numberWithFloat:[o numberValue]], @"stringValue",
 								  nil]];
 				break;
 			case 2:
 				[nodes addObject:[NSDictionary dictionaryWithObjectsAndKeys:
 								  @"STRING", @"name",
-								  [o stringValue], @"content",
+								  [o stringValue], @"stringValue",
 								  nil]];
 				break;
 			case 3:
 				[nodes addObject:[NSDictionary dictionaryWithObjectsAndKeys:
 								  @"BOOLEAN", @"name",
-								  [NSNumber numberWithBool:[o booleanValue]], @"content",
+								  [NSNumber numberWithBool:[o booleanValue]], @"stringValue",
 								  nil]];
 				break;
 			default:
@@ -146,16 +183,78 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 				}
 				break;
 		}
-		_nodes = [nodes retain];
 	};
-	[outlineView reloadData];
+	return nodes;
+}
+
+- (NSArray *)nodesFromDocForXPath:(NSString *)xpath
+{
+	WebFrame *frame = [_ctx objectForKey:@"WebElementFrame"];
+	NSData *doc = [[frame dataSource] data];
+	NSError *err = nil;
+
+	NSString *encName = [[[frame dataSource] response] textEncodingName];
+	NSStringEncoding responseEncoding = CFStringConvertEncodingToNSStringEncoding(CFStringConvertIANACharSetNameToEncoding((CFStringRef)encName));
+	NSString *responseString = [[[NSString alloc] initWithData:doc encoding:responseEncoding] autorelease];	
+	
+	NSXMLDocument *xmldoc = [[[NSXMLDocument alloc] initWithXMLString:responseString options:NSXMLDocumentTidyHTML error:&err] autorelease];
+	if(!xmldoc)
+		return nil; // XXX: err may be flooded with Tidy warnings
+	err = nil;
+	NSXMLElement *root = [xmldoc rootElement];
+	
+	NSArray *nl = [root nodesForXPath:xpath error:&err];
+	if(err) {
+		NSLog(@"xpath error: %@", err);
+		return nil;
+	}
+	NSMutableArray *nodes = [NSMutableArray arrayWithCapacity:[nl count]];
+	for(NSXMLNode *n in nl) {
+		[nodes addObject:[self dictForNSXMLNode:n]];
+	}
+	return nodes;
+}
+
+- (NSDictionary *)dictForNSXMLNode:(NSXMLNode *)n
+{
+	NSMutableDictionary *d = [NSMutableDictionary dictionaryWithObjectsAndKeys:
+							  [[n name] lowercaseString], @"name",
+							  [n stringValue], @"stringValue",
+							  nil];
+	if([n childCount] > 0) {
+		NSMutableArray *nodes = [NSMutableArray arrayWithCapacity:[n childCount]];
+		for(NSXMLNode *nn in [n children]) {
+			if([nn kind] == NSXMLElementKind)
+				[nodes addObject:[self dictForNSXMLNode:nn]];
+		}
+		if([nodes count])
+			[d setObject:nodes forKey:@"children"];
+	}
+	int ac = [[(NSXMLElement *)n attributes] count];
+	if(ac > 0) {
+		NSMutableDictionary *attrs = [NSMutableDictionary dictionaryWithCapacity:ac];
+		NSMutableArray *ja = [NSMutableArray arrayWithCapacity:ac];
+		for(NSXMLNode *nn in [(NSXMLElement *)n attributes]) {
+			NSString *k = [nn name];
+			NSString *v = [nn stringValue];
+			
+			[attrs setObject:v forKey:k];
+			if([v rangeOfString:@" "].location == NSNotFound) 
+				[ja addObject:[NSString stringWithFormat:@"%@=%@", k, v]];
+			else
+				[ja addObject:[NSString stringWithFormat:@"%@=\"%@\"", k, v]];
+		}
+		[d setObject:attrs forKey:@"attributes"];
+		[d setObject:[ja componentsJoinedByString:@" "] forKey:@"attributes_string"];
+	}
+	return d;
 }
 
 - (NSDictionary *)dictForNode:(DOMNode *)n
 {
 	NSMutableDictionary *d = [NSMutableDictionary dictionaryWithObjectsAndKeys:
 							  [[n nodeName] lowercaseString], @"name",
-							  [n textContent], @"content",
+							  [n textContent], @"stringValue",
 							  nil];
 	if([n hasChildNodes]) {
 		DOMNodeList *nl = [n childNodes];
@@ -167,7 +266,7 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 				[nodes addObject:[self dictForNode:nn]];
 		}
 		if([nodes count])
-			[d setObject:nodes forKey:@"childNodes"];
+			[d setObject:nodes forKey:@"children"];
 	}
 	if([n hasAttributes]) {
 		DOMNamedNodeMap *nl = [n attributes];
@@ -196,7 +295,7 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 - (id)outlineView:(NSOutlineView *)outlineView child:(NSInteger)index ofItem:(NSDictionary *)item
 {
 	if(item) {
-		return [[item objectForKey:@"childNodes"] objectAtIndex:index];
+		return [[item objectForKey:@"children"] objectAtIndex:index];
 	} else {
 		return [_nodes objectAtIndex:index];
 	}
@@ -204,13 +303,13 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 
 - (BOOL)outlineView:(NSOutlineView *)outlineView isItemExpandable:(NSDictionary *)item
 {
-	return [item objectForKey:@"childNodes"] != nil;
+	return [item objectForKey:@"children"] != nil;
 }
 
 - (NSInteger)outlineView:(NSOutlineView *)outlineView numberOfChildrenOfItem:(NSDictionary *)item
 {
 	if(item) {
-		return [[item objectForKey:@"childNodes"] count];
+		return [[item objectForKey:@"children"] count];
 	} else {
 		return [_nodes count];
 	}
@@ -221,14 +320,14 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 	if([[tableColumn identifier] isEqualToString:@"name"]) {
 		return [item objectForKey:@"name"];
 	} else if([[tableColumn identifier] isEqualToString:@"value"]) {
-		return [item objectForKey:@"content"];
+		return [item objectForKey:@"stringValue"];
 	} else {
 		return [item objectForKey:@"attributes_string"];
 	}
 }
 
 #pragma mark
-#pragma mark XPath evaluator
+#pragma mark Reverse XPath evaluator
 - (NSString *)xpathForNode:(id)n
 {
 	id parent = [n parentNode];
