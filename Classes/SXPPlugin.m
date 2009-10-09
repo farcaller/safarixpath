@@ -30,28 +30,13 @@
 #pragma mark ** C API **
 static SXPPlugin *Plugin = nil;
 
-BOOL DTRenameSelector(Class _class, SEL _oldSelector, SEL _newSelector)
-{
-	Method method = nil;
+struct objc_method_ {
+    SEL method_name;
+    char *method_types;
+    IMP method_imp;
+};
 
-	// First, look for the methods
-	method = class_getInstanceMethod(_class, _oldSelector);
-	if (method == nil)
-		return NO;
-
-	method->method_name = _newSelector;
-	return YES;
-}
-
-static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SEL _cmd, id *sender, NSDictionary *element, NSArray *defaultMenuItems)
-{
-	[SXPPlugin sharedInstance].ctx = element;
-	NSArray *itms = [self _sxp_orig_webView:sender contextMenuItemsForElement:element defaultMenuItems:defaultMenuItems];
-	NSMutableArray *itms2 = [NSMutableArray arrayWithArray:itms];
-	[itms2 addObject:[NSMenuItem separatorItem]];
-	[itms2 addObject:[[SXPPlugin sharedInstance] myMenuItem]];
-	return itms2;
-}
+typedef struct objc_method_ *Method_;
 
 #pragma mark -
 #pragma mark ** Private Methods **
@@ -66,8 +51,34 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 - (NSArray *)nodesFromDOMForXPath:(NSString *)xpath;
 - (NSArray *)nodesFromDocForXPath:(NSString *)xpath;
 
+- (NSArray *)_sxp_orig_webView:(id)sender contextMenuItemsForElement:(NSDictionary *)element defaultMenuItems:(NSArray *)defaultMenuItems;
+
 @end
 
+#pragma mark -
+#pragma mark ** More C Stuff **
+BOOL DTRenameSelector(Class _class, SEL _oldSelector, SEL _newSelector)
+{
+	Method_ method = nil;
+
+	// First, look for the methods
+	method = (Method_)class_getInstanceMethod(_class, _oldSelector);
+	if (method == nil)
+		return NO;
+
+	method->method_name = _newSelector;
+	return YES;
+}
+
+static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(SXPPlugin *self, SEL _cmd, id sender, NSDictionary *element, NSArray *defaultMenuItems)
+{
+	[SXPPlugin sharedInstance].ctx = element;
+	NSArray *itms = [self _sxp_orig_webView:sender contextMenuItemsForElement:element defaultMenuItems:defaultMenuItems];
+	NSMutableArray *itms2 = [NSMutableArray arrayWithArray:itms];
+	[itms2 addObject:[NSMenuItem separatorItem]];
+	[itms2 addObject:[[SXPPlugin sharedInstance] myMenuItem]];
+	return itms2;
+}
 
 #pragma mark -
 #pragma mark ** Main Class **
@@ -153,7 +164,7 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 	
 	id o = [[view windowScriptObject] evaluateWebScript:js];
 	if(![[o class] isEqual:[WebUndefined class]]) {
-		int rt = [o resultType];
+		int rt = [((DOMXPathResult *)o) resultType];
 		nodes = [NSMutableArray array];
 		id n;
 		switch(rt) {
@@ -273,8 +284,8 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 		int len = [nl length];
 		NSMutableDictionary *attrs = [NSMutableDictionary dictionaryWithCapacity:len];
 		for(int i=0; i<len; ++i) {
-			id *nn = [nl item:i];
-			[attrs setObject:[nn value] forKey:[nn name]];
+			DOMNode *nn = [nl item:i];
+			[attrs setObject:[nn value] forKey:(id)[nn name]];
 		}
 		[d setObject:attrs forKey:@"attributes"];
 		NSMutableArray *ja = [NSMutableArray arrayWithCapacity:len];
@@ -328,9 +339,9 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 
 #pragma mark
 #pragma mark Reverse XPath evaluator
-- (NSString *)xpathForNode:(id)n
+- (NSString *)xpathForNode:(DOMNode *)n
 {
-	id parent = [n parentNode];
+	DOMNode *parent = [n parentNode];
 	NSString *nm = @"";
 	
 	if((int)[n nodeType] == 1) {
@@ -341,7 +352,7 @@ static NSArray *webView_contextMenuItemsForElement_defaultMenuItems_(id self, SE
 			NSString *n_name = [n nodeName];
 			nm = [NSString stringWithFormat:@"/%@", [n_name lowercaseString]];
 			if(parent) {
-				id cn = [parent childNodes];
+				DOMNodeList *cn = [parent childNodes];
 				int cn_len = (int)[cn length];
 				if(cn_len > 1) {
 					int mi = 0;
